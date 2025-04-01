@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import Column, String, Text, text, BigInteger
+from sqlalchemy import Column, String, Text, text, BigInteger, ForeignKey
 from contextlib import asynccontextmanager
 from logger import info, error
 from config import DATABASE_URL
@@ -22,6 +22,17 @@ class AccountModel(Base):
     created_at = Column(Text, nullable=True)
     status = Column(String, default="active", nullable=False)
     id = Column(BigInteger, nullable=False, index=True)  # 添加毫秒时间戳列并创建索引
+
+
+# 账号使用记录模型
+class AccountUsageRecordModel(Base):
+    __tablename__ = "account_usage_records"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, index=True)  # 账号ID
+    email = Column(String, nullable=False, index=True)  # 账号邮箱
+    ip = Column(String, nullable=True)  # 使用者IP
+    user_agent = Column(Text, nullable=True)  # 使用者UA
+    created_at = Column(Text, nullable=False)  # 创建时间
 
 
 def create_engine():

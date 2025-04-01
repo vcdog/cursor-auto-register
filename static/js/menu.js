@@ -72,8 +72,14 @@ $("#email-type").change(function() {
     if ($(this).val() === "tempemail") {
         $("#tempemail-fields").show();
         $("#zmail-fields").hide();
+        $("#gmail-fields").hide();
     } else if ($(this).val() === "zmail") {
         $("#tempemail-fields").hide();
         $("#zmail-fields").show();
+        $("#gmail-fields").hide();
+    } else if ($(this).val() === "gmail") {
+        $("#tempemail-fields").hide();
+        $("#zmail-fields").hide();
+        $("#gmail-fields").show();
     }
 });

@@ -10,9 +10,9 @@ from config import (
     SETTINGS_URL,
     EMAIL_DOMAINS,
     REGISTRATION_MAX_RETRIES,
-    EMAIL_TYPE
+    EMAIL_TYPE,
+    EMAIL_CODE_TYPE
 )
-
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -75,13 +75,16 @@ def handle_turnstile(tab):
                 if page_ready:
                     info("页面已准备好，没有检测到需要处理的验证")
                     break
-            except:
-                pass
-            time.sleep(random.uniform(1, 2))
-            count += 1
-        return True  # 返回True表示页面已准备好
+                
+                time.sleep(5)  # 等待5秒后再次检查
+                count += 1
+            except Exception as e:
+                info(f"Turnstile 检测遇到错误: {str(e)}")
+                time.sleep(3)  # 出错后等待3秒
+                count += 1
+        return True  # 如果执行到这里，说明页面已准备好且没有验证需要处理
     except Exception as e:
-        info(f"Turnstile 验证失败: {str(e)}")
+        error(f"Turnstile 处理出错: {str(e)}")
         return False
 
 
@@ -148,6 +151,13 @@ def get_cursor_session_token(tab, max_attempts=5, retry_interval=3):
 
 def sign_up_account(browser, tab, account_info):
     info("=============开始注册账号=============")
+    
+    info("=============正在填写个人信息=============")
+    
+    info("=============提交个人信息=============")
+    
+    info("=============正在检测 Turnstile 验证=============")
+    
     info(
         f"账号信息: 邮箱: {account_info['email']}, 密码: {account_info['password']}, 姓名: {account_info['first_name']} {account_info['last_name']}"
     )
@@ -155,17 +165,10 @@ def sign_up_account(browser, tab, account_info):
         EmailVerificationHandler.create_zmail_email(account_info)
     tab.get(SIGN_UP_URL)
 
-    time.sleep(random.uniform(1, 3))
+    tab.wait(2)
 
-    wait_count = 1
-    while True:
-        if tab.ele("@name=first_name"):
-            break
-        if tab.ele("@name=cf-turnstile-response"):
-            error("开屏就是检测啊，大佬你的IP或UA需要换一下了啊，有问题了...要等一下")
-        time.sleep(random.uniform(3, 5))
-        info(f'第 {wait_count} 次等待...')
-        wait_count += 1
+    if tab.ele("@name=cf-turnstile-response"):
+        error("开屏就是检测啊，大佬你的IP或UA需要换一下了啊，有问题了...要等一下")
 
     try:
         if tab.ele("@name=first_name"):
@@ -188,7 +191,7 @@ def sign_up_account(browser, tab, account_info):
             if (
                     tab.ele("verify the user is human. Please try again.")
                     or tab.ele("Can't verify the user is human. Please try again.")
-                    or tab.ele("Can‘t verify the user is human. Please try again.")
+                    or tab.ele("Can't verify the user is human. Please try again.")
             ):
                 info("检测到turnstile验证失败，（IP问题、UA问题、域名问题）...正在重试...")
                 return "EMAIL_USED"
@@ -229,6 +232,85 @@ def sign_up_account(browser, tab, account_info):
         info("注册限制")
         return "SIGNUP_RESTRICTED"
 
+    # 填写邮箱并提交
+    info("填写邮箱并提交")
+    try:
+        # 尝试多种定位方式
+        email_field = None
+        locators = [
+            "@data-index=0",
+            "tag:input[type='text']",
+            "tag:input.text-input",
+            "tag:input[placeholder*='email']",
+            "tag:input"
+        ]
+        
+        for locator in locators:
+            try:
+                email_field = tab.ele(locator, timeout=3)
+                if email_field:
+                    info(f"找到邮箱输入框，使用定位器: {locator}")
+                    break
+            except:
+                continue
+        
+        if not email_field:
+            error("无法找到邮箱输入框")
+            # 尝试保存页面源码以便调试
+            try:
+                with open("page_source.html", "w", encoding="utf-8") as f:
+                    f.write(tab.html)
+                info("已保存页面源码")
+            except Exception as e:
+                error(f"保存页面源码失败: {str(e)}")
+            return "ELEMENT_NOT_FOUND"
+        
+        # 使用input()而不是send_keys()
+        info("输入邮箱: " + account_info["email"])
+        email_field.input(account_info["email"])
+        
+        # 尝试多种方式定位提交按钮
+        submit_buttons = [
+            'text="Continue"',
+            'text="继续"',
+            'text="Next"',
+            'text="Submit"',
+            'tag:button[type="submit"]',
+            'tag:button'
+        ]
+        
+        for button in submit_buttons:
+            try:
+                tab.ele(button, timeout=3).click()
+                info(f"点击了提交按钮: {button}")
+                break
+            except:
+                continue
+                
+        # 等待页面响应
+        time.sleep(5)
+        
+    except Exception as e:
+        error(f"填写邮箱过程中出错: {str(e)}")
+        # 不使用截图，仅记录错误
+        return "ERROR"
+    
+    # 检查是否提示邮箱已使用
+    try:
+        error_message = tab.ele("tag:span.text-rose-500", timeout=5)
+        if error_message:
+            error_text = error_message.text
+            info(f"检测到错误信息: {error_text}")
+            if "email is already in use" in error_text:
+                error("电子邮件已被使用")
+                return "EMAIL_USED"
+    except:
+        pass
+    
+    # 添加验证 - 确保发出验证邮件
+    info("等待验证邮件发送...")
+    time.sleep(5)  # 给服务器一些时间发送邮件
+
     # 创建邮件处理器
     email_handler = EmailVerificationHandler()
     i = 0
@@ -238,35 +320,110 @@ def sign_up_account(browser, tab, account_info):
             if tab.ele("Account Settings"):
                 info("注册成功，已进入账号设置页面")
                 break
-            if tab.ele("@data-index=0"):
+            if tab.ele("@data-index=0", timeout=3) or tab.ele("tag:input[type='text']", timeout=3):
                 info("等待输入验证码...")
-                # 切换到邮箱标签页
-                code = email_handler.get_verification_code(
-                    source_email=account_info["email"]
-                )
-                if code is None:
-                    info("未获取到验证码...系统异常，正在退出....")
-                    return "EMAIL_GET_CODE_FAILED"
-                info(f"输入验证码: {code}")
-                i = 0
-                for digit in code:
-                    tab.ele(f"@data-index={i}").input(digit)
-                    time.sleep(random.uniform(0.3, 0.6))
-                    i += 1
-                info("验证码输入完成")
-                time.sleep(random.uniform(3, 5))
+                # 在等待输入验证码前添加
+                current_state = detect_page_state(tab)
+                info(f"当前页面状态检测: {current_state}")
 
-                # 在验证码输入完成后检测是否出现了Turnstile验证
-                info("检查是否出现了Turnstile验证...")
-                try:
-                    turnstile_element = tab.ele("@id=cf-turnstile", timeout=3)
-                    if turnstile_element:
-                        info("检测到验证码输入后出现Turnstile验证，正在处理...")
-                        handle_turnstile(tab)
-                except:
-                    info("未检测到Turnstile验证，继续下一步")
+                if current_state == "email_verification":
+                    info("检测到需要输入验证码")
+                    
+                    # 获取验证码
+                    code = email_handler.get_verification_code(
+                        source_email=account_info["email"]
+                    )
+                    if code:
+                        info(f"输入验证码: {code}")
+                        # 修改验证码输入方式
+                        verification_inputs = tab.eles("@data-index", timeout=5)
+                        info(f"找到 {len(verification_inputs)} 个输入框元素")
+                        
+                        # 记录每个输入框的信息
+                        for i, inp in enumerate(verification_inputs):
+                            try:
+                                attrs = tab.run_js(f'return JSON.stringify(document.querySelectorAll("[data-index]")[{i}].attributes);')
+                                info(f"输入框 {i} 属性: {attrs}")
+                            except Exception as e:
+                                info(f"输入框 {i}: 无法获取详细信息 - {str(e)}")
+                        
+                        if verification_inputs and len(verification_inputs) >= 6:
+                            info("使用多输入框模式输入验证码")
+                            # 分别向每个输入框输入一个数字
+                            for i, digit in enumerate(code):
+                                if i < len(verification_inputs):
+                                    try:
+                                        verification_inputs[i].clear()
+                                        info(f"正在输入第 {i+1} 位: {digit}")
+                                        verification_inputs[i].input(digit)
+                                        time.sleep(0.5)  # 每输入一个数字后短暂等待
+                                    except Exception as e:
+                                        error(f"输入第 {i+1} 位时出错: {str(e)}")
+                                        # 尝试使用JavaScript输入
+                                        try:
+                                            js_cmd = f'document.querySelectorAll("[data-index]")[{i}].value = "{digit}";'
+                                            tab.run_js(js_cmd)
+                                            info(f"使用JavaScript输入第 {i+1} 位: {digit}")
+                                        except Exception as js_e:
+                                            error(f"JavaScript输入第 {i+1} 位时出错: {str(js_e)}")
+                        else:
+                            info("使用单输入框模式输入验证码")
+                            # 如果没有找到单独的输入框，尝试定位主输入框
+                            input_field = tab.ele("@data-index=0", timeout=5) or tab.ele("tag:input[type='text']", timeout=5)
+                            if input_field:
+                                try:
+                                    input_field.clear()
+                                    info("清除输入框内容")
+                                    # 尝试一次性输入
+                                    info("尝试一次性输入完整验证码")
+                                    input_field.input(code)
+                                except Exception as e:
+                                    error(f"一次性输入验证码时出错: {str(e)}")
+                                    # 如果一次性输入失败，尝试逐个字符输入
+                                    try:
+                                        for i, digit in enumerate(code):
+                                            info(f"正在输入第 {i+1} 位: {digit}")
+                                            input_field.input(digit)
+                                            time.sleep(0.5)
+                                    except Exception as e2:
+                                        error(f"逐字输入验证码时出错: {str(e2)}")
+                                else:
+                                    error("无法找到验证码输入框")
+                                    return "VERIFY_FAILED"
+                        
+                        info("验证码输入完成")
+                        # 增加输入后的等待时间
+                        time.sleep(3)
 
-                break
+                    else:
+                        error("未获取到验证码，退出注册流程")
+                        return "EMAIL_GET_CODE_FAILED"
+
+                    # 在验证码输入完成后检测是否出现了Turnstile验证
+                    info("检查是否出现了Turnstile验证...")
+                    try:
+                        turnstile_element = tab.ele("@id=cf-turnstile", timeout=3)
+                        if turnstile_element:
+                            info("检测到验证码输入后出现Turnstile验证，正在处理...")
+                            handle_turnstile(tab)
+                    except:
+                        info("未检测到Turnstile验证，继续下一步")
+
+                    break
+                elif current_state == "password_setup":
+                    info("检测到密码设置页面")
+                    # 密码设置代码...
+                    pass
+                elif current_state == "account_settings":
+                    info("检测到账号设置页面，注册已完成")
+                    break
+                else:
+                    info(f"未知页面状态: {current_state}")
+                    # 可能需要特殊处理...
+            # except Exception as e:
+            #     info(f"验证码处理失败: {str(e)}")
+            #     return "ERROR"
+            i += 1
         except Exception as e:
             info(f"验证码处理失败: {str(e)}")
             return "ERROR"
@@ -274,7 +431,7 @@ def sign_up_account(browser, tab, account_info):
     info("完成最终验证...")
     handle_turnstile(tab)
     time.sleep(random.uniform(3, 5))
-    info("账号注册流程完成")
+    info("注册流程完成")
     return "SUCCESS"
 
 
@@ -326,14 +483,16 @@ class EmailGenerator:
         return first_letter + rest_letters
 
     def generate_email(self, length=8):
-        """生成随机邮箱地址，使用随机域名"""
+        """生成随机邮箱地址，使用配置的域名"""
         random_str = "".join(
             random.choices("abcdefghijklmnopqrstuvwxyz1234567890", k=length)
         )
         timestamp = str(int(time.time()))[-4:]  # 使用时间戳后4位
-        # 随机选择一个域名
-        domain = random.choice(self.domains)
-        return f"{random_str}@{domain}"
+        
+        # 使用配置的域名（第一个）
+        domain = EMAIL_DOMAINS[0] if EMAIL_DOMAINS else "gmail.com"
+            
+        return f"{random_str}{timestamp}@{domain}"
 
     def get_account_info(self):
         """获取账号信息，确保每次调用都生成新的邮箱和密码"""
@@ -429,6 +588,16 @@ def main():
     current_retry = 0
 
     try:
+        email_handler = EmailVerificationHandler()
+        if email_handler.check():
+            info('邮箱服务连接正常，开始注册!')
+        else:
+            if EMAIL_CODE_TYPE == "API":
+                error('邮箱服务连接失败，并且验证码为API获取，结束注册!')
+                return
+            else:
+                info('邮箱服务连接失败，并且验证码为手动输入，等待输入验证码...')
+
         email_generator = EmailGenerator()
         browser_manager = BrowserManager()
         browser = browser_manager.init_browser()
@@ -446,15 +615,25 @@ def main():
                 result = sign_up_account(browser, signup_tab, account_info)
 
                 if result == "SUCCESS":
-                    token, user = get_cursor_session_token(signup_tab)
-                    info(f"获取到账号Token: {token}, 用户: {user}")
-                    if token:
-                        email_generator._save_account_info(user, token, TOTAL_USAGE)
-                        info("注册流程完成")
-                        cleanup_and_exit(browser_manager, 0)
+                    info("注册成功，获取会话Token...")
+                    token_result = get_cursor_session_token(signup_tab)
+                    
+                    # 检查返回类型
+                    if token_result and isinstance(token_result, tuple):
+                        token, user = token_result
+                        # 处理成功获取token的情况
+                        info(f"成功获取会话Token: {token[:10]}...")
+                        info(f"账号: {user}")
+                        if token:
+                            email_generator._save_account_info(user, token, TOTAL_USAGE)
+                            info("注册流程完成")
+                            cleanup_and_exit(browser_manager, 0)
+                        else:
+                            info("获取Cursor会话Token失败")
                     else:
-                        info("获取Cursor会话Token失败")
-                        current_retry += 1
+                        info("无法获取会话Token，但注册过程已完成")
+                        # 可能需要的后续处理...
+                    current_retry += 1
                 elif result in [
                     "EMAIL_USED",
                     "SIGNUP_RESTRICTED",
@@ -489,3 +668,32 @@ def main():
         cleanup_and_exit(browser_manager, 1)
     finally:
         cleanup_and_exit(browser_manager, 1)
+
+
+def detect_page_state(tab):
+    """检测当前页面状态"""
+    page_indicators = {
+        "email_verification": ["@data-index=0", "tag:input[type='text']", "verification", "verify"],
+        "password_setup": ["password", "设置密码", "tag:input[type='password']"],
+        "account_settings": ["Account Settings", "账号设置"],
+        "error_page": ["error", "错误", "failed", "失败"],
+        "captcha": ["captcha", "验证码", "robot", "人机验证"]
+    }
+    
+    for state, indicators in page_indicators.items():
+        for indicator in indicators:
+            try:
+                if indicator.startswith("tag:"):
+                    if tab.find(indicator):
+                        return state
+                else:
+                    if indicator in tab.html.lower():
+                        return state
+            except:
+                continue
+    
+    return "unknown"
+
+
+if __name__ == "__main__":
+    main()

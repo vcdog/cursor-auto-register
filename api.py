@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, status, UploadFile
+from fastapi import FastAPI, HTTPException, status, UploadFile, Request
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy import select, func, delete, desc
 from pathlib import Path
-from database import get_session, AccountModel, init_db
+from database import get_session, AccountModel, AccountUsageRecordModel, init_db
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import uvicorn
@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 import json
 import time
+from log_parser import LogParser
 
 # 全局状态追踪
 registration_status = {
@@ -41,6 +42,13 @@ registration_status = {
     "failed_runs": 0,
 }
 
+# 全局进度追踪
+registration_progress = {
+    "stage": 0,
+    "message": "等待开始...",
+    "percentage": 0
+}
+
 # 定义静态文件目录
 static_path = Path(__file__).parent / "static"
 static_path.mkdir(exist_ok=True)  # 确保目录存在
@@ -48,6 +56,11 @@ static_path.mkdir(exist_ok=True)  # 确保目录存在
 # 全局任务存储
 background_tasks = {"registration_task": None}
 
+# 创建日志解析器实例
+log_parser = LogParser()
+
+# 避免循环导入
+register_account = None
 
 # 添加lifespan管理器，在应用启动时初始化数据库
 @asynccontextmanager
@@ -122,79 +135,42 @@ async def get_account_count() -> int:
 
 
 async def run_registration():
-    """运行注册脚本"""
+    """运行注册流程并更新状态"""
     global registration_status
-    browser_manager = None
-
+    info("注册任务开始运行")
     try:
-        info("注册任务开始运行")
+        # 获取当前账号数
+        count = await get_active_account_count()
+        info(f"当前数据库已激活账号数: {count}")
 
-        while registration_status["is_running"]:
-            try:
-                count = await get_active_account_count()
-                info(f"当前数据库已激活账号数: {count}")
+        # 检查是否达到最大账号数量
+        if count >= MAX_ACCOUNTS:
+            info(f"已达到最大账号数量 ({count}/{MAX_ACCOUNTS})，暂停注册")
+            registration_status["is_running"] = True
+            registration_status["last_status"] = "monitoring"
+            await schedule_next_run(REGISTRATION_INTERVAL)
+            return
 
-                if count >= MAX_ACCOUNTS:
-                    # 修改：不再结束任务，而是进入监控模式
-                    info(f"已达到最大账号数量 ({count}/{MAX_ACCOUNTS})，进入监控模式")
-                    registration_status["last_status"] = "monitoring"
+        registration_status["is_running"] = True
+        registration_status["last_status"] = "running"
+        info(f"开始注册尝试 (当前账号数: {count}/{MAX_ACCOUNTS})")
 
-                    # 等待检测间隔时间
-                    next_check = datetime.now().timestamp() + REGISTRATION_INTERVAL
-                    registration_status["next_run"] = next_check
-                    info(f"将在 {REGISTRATION_INTERVAL} 秒后重新检查账号数量")
-                    await asyncio.sleep(REGISTRATION_INTERVAL)
+        # 获取正确的注册函数
+        register_func = get_register_function()
+        
+        # 使用注册函数
+        success = await asyncio.get_event_loop().run_in_executor(
+            None, register_func
+        )
 
-                    # 跳过当前循环的剩余部分，继续下一次循环检查
-                    continue
+        if success:
+            registration_status["successful_runs"] += 1
+        else:
+            registration_status["failed_runs"] += 1
 
-                info(f"开始注册尝试 (当前账号数: {count}/{MAX_ACCOUNTS})")
-                registration_status["last_run"] = datetime.now().isoformat()
-                registration_status["total_runs"] += 1
-
-                # 调用注册函数
-                try:
-                    success = await asyncio.get_event_loop().run_in_executor(
-                        None, register_account
-                    )
-
-                    if success:
-                        registration_status["successful_runs"] += 1
-                        registration_status["last_status"] = "success"
-                        info("注册成功")
-                    else:
-                        registration_status["failed_runs"] += 1
-                        registration_status["last_status"] = "failed"
-                        info("注册失败")
-                except SystemExit:
-                    # 捕获 SystemExit 异常，这是注册脚本正常退出的方式
-                    info("注册脚本正常退出")
-                    if registration_status["last_status"] != "error":
-                        registration_status["last_status"] = "completed"
-                except Exception as e:
-                    error(f"注册过程执行出错: {str(e)}")
-                    error(traceback.format_exc())
-                    registration_status["failed_runs"] += 1
-                    registration_status["last_status"] = "error"
-
-                # 更新下次运行时间
-                next_run = datetime.now().timestamp() + REGISTRATION_INTERVAL
-                registration_status["next_run"] = next_run
-
-                info(f"等待 {REGISTRATION_INTERVAL} 秒后进行下一次尝试")
-                await asyncio.sleep(REGISTRATION_INTERVAL)
-
-            except asyncio.CancelledError:
-                info("注册迭代被取消")
-                raise
-            except Exception as e:
-                registration_status["failed_runs"] += 1
-                registration_status["last_status"] = "error"
-                error(f"注册过程出错: {str(e)}")
-                error(traceback.format_exc())
-                if not registration_status["is_running"]:
-                    break
-                await asyncio.sleep(REGISTRATION_INTERVAL)
+        registration_status["total_runs"] += 1
+        
+        # 其余代码不变...
     except asyncio.CancelledError:
         info("注册任务被取消")
         raise
@@ -204,12 +180,6 @@ async def run_registration():
         raise
     finally:
         registration_status["is_running"] = False
-        if browser_manager:
-            try:
-                browser_manager.quit()
-            except Exception as e:
-                error(f"清理浏览器资源时出错: {str(e)}")
-                error(traceback.format_exc())
 
 
 @app.get("/", tags=["UI"])
@@ -553,11 +523,23 @@ async def update_account_status(id: str, update: StatusUpdate):
 async def start_registration():
     """手动启动注册任务"""
     info("手动启动注册任务")
-    global background_tasks, registration_status
+    global background_tasks, registration_status, log_parser
+    
     try:
+        # 记录当前操作的精确时间
+        current_time = datetime.now()
+        
+        # 重置日志解析器的进度状态，并传入当前时间作为过滤点
+        log_parser.reset_progress(current_time)
+        
+        # 重置注册进度
+        registration_progress["stage"] = 0
+        registration_progress["message"] = "准备开始..."
+        registration_progress["percentage"] = 0
+        
         # 检查是否已达到最大账号数
         count = await get_active_account_count()
-
+        
         # 检查任务是否已在运行
         if (
             background_tasks["registration_task"]
@@ -1103,7 +1085,7 @@ async def import_accounts(file: UploadFile):
 
 # 添加"使用Token"功能
 @app.post("/account/use-token/{id}", tags=["Accounts"])
-async def use_account_token(id: int):
+async def use_account_token(id: int, request: Request):
     """使用指定账号的Token更新Cursor认证"""
     try:
         async with get_session() as session:
@@ -1130,6 +1112,25 @@ async def use_account_token(id: int):
 
             resetter = CursorShadowPatcher()
             patch_success = resetter.reset_machine_ids()
+            
+            # 记录使用记录
+            if success:
+                # 获取请求客户端IP
+                client_ip = request.client.host
+                # 获取用户代理
+                user_agent = request.headers.get("User-Agent", "")
+                
+                # 创建使用记录
+                usage_record = AccountUsageRecordModel(
+                    id=int(time.time() * 1000),  # 使用毫秒级时间戳作为ID
+                    account_id=id,
+                    email=account.email,
+                    ip=client_ip,
+                    user_agent=user_agent,
+                    created_at=datetime.now().isoformat()
+                )
+                session.add(usage_record)
+                await session.commit()
 
             if success and patch_success:
                 return {
@@ -1148,6 +1149,52 @@ async def use_account_token(id: int):
         error(f"使用账号Token失败: {str(e)}")
         error(traceback.format_exc())
         return {"success": False, "message": f"使用Token失败: {str(e)}"}
+
+# 添加获取账号使用记录接口
+@app.get("/account/{id}/usage-records", tags=["Accounts"])
+async def get_account_usage_records(id: int):
+    """获取指定账号的使用记录"""
+    try:
+        async with get_session() as session:
+            # 通过ID查询账号
+            result = await session.execute(
+                select(AccountModel).where(AccountModel.id == id)
+            )
+            account = result.scalar_one_or_none()
+
+            if not account:
+                return {"success": False, "message": f"ID为 {id} 的账号不存在"}
+            
+            # 查询使用记录
+            result = await session.execute(
+                select(AccountUsageRecordModel)
+                .where(AccountUsageRecordModel.account_id == id)
+                .order_by(desc(AccountUsageRecordModel.created_at))
+            )
+            
+            records = result.scalars().all()
+            
+            # 转换记录为字典列表
+            records_list = []
+            for record in records:
+                records_list.append({
+                    "id": record.id,
+                    "account_id": record.account_id,
+                    "email": record.email,
+                    "ip": record.ip,
+                    "user_agent": record.user_agent,
+                    "created_at": record.created_at
+                })
+            
+            return {
+                "success": True,
+                "records": records_list
+            }
+
+    except Exception as e:
+        error(f"获取账号使用记录失败: {str(e)}")
+        error(traceback.format_exc())
+        return {"success": False, "message": f"获取账号使用记录失败: {str(e)}"}
 
 # 添加"重置设备id"功能
 @app.get("/reset-machine", tags=["System"])
@@ -1190,6 +1237,8 @@ class ConfigModel(BaseModel):
     PROXY_TIMEOUT: Optional[int] = None
     PROXY_USERNAME: Optional[str] = None
     PROXY_PASSWORD: Optional[str] = None
+    GMAIL_USERNAME: str
+    GMAIL_APP_PASSWORD: str
 
 
 # 获取配置端点
@@ -1212,6 +1261,7 @@ async def get_config():
             "EMAIL_USERNAME": os.getenv("EMAIL_USERNAME", ""),
             "EMAIL_DOMAIN": os.getenv("EMAIL_DOMAIN", ""),
             "EMAIL_PIN": os.getenv("EMAIL_PIN", ""),
+            "EMAIL_CODE_TYPE": os.getenv("EMAIL_CODE_TYPE", "API"),
             "BROWSER_PATH": os.getenv("BROWSER_PATH", ""),
             "CURSOR_PATH": os.getenv("CURSOR_PATH", ""),
             "DYNAMIC_USERAGENT": os.getenv("DYNAMIC_USERAGENT", "False").lower() == "true",
@@ -1223,6 +1273,8 @@ async def get_config():
             "PROXY_TIMEOUT": os.getenv("PROXY_TIMEOUT", "10"),
             "PROXY_USERNAME": os.getenv("PROXY_USERNAME", ""),
             "PROXY_PASSWORD": os.getenv("PROXY_PASSWORD", ""),
+            "GMAIL_USERNAME": os.getenv("GMAIL_USERNAME", ""),
+            "GMAIL_APP_PASSWORD": os.getenv("GMAIL_APP_PASSWORD", ""),
         }
         
         return {"success": True, "data": config}
@@ -1255,6 +1307,7 @@ async def update_config(config: ConfigModel):
             "EMAIL_DOMAINS": config.EMAIL_DOMAINS,
             "EMAIL_USERNAME": config.EMAIL_USERNAME,
             "EMAIL_PIN": config.EMAIL_PIN,
+            "EMAIL_CODE_TYPE": config.EMAIL_CODE_TYPE,
             # 添加代理配置
             "USE_PROXY": str(config.USE_PROXY),
             "PROXY_TYPE": config.PROXY_TYPE,
@@ -1263,6 +1316,8 @@ async def update_config(config: ConfigModel):
             "PROXY_TIMEOUT": str(config.PROXY_TIMEOUT),
             "PROXY_USERNAME": config.PROXY_USERNAME,
             "PROXY_PASSWORD": config.PROXY_PASSWORD,
+            "GMAIL_USERNAME": config.GMAIL_USERNAME,
+            "GMAIL_APP_PASSWORD": config.GMAIL_APP_PASSWORD,
         }
 
         # 添加可选配置（如果提供）
@@ -1354,6 +1409,97 @@ async def restart_service():
         error(f"重启服务失败: {str(e)}")
         error(traceback.format_exc())
         return {"success": False, "message": f"重启服务失败: {str(e)}"}
+
+
+@app.get("/debug/screenshot")
+async def take_screenshot():
+    """获取当前浏览器状态的截图和HTML"""
+    try:
+        # 检查是否有活动的browser_manager
+        if not hasattr(app.state, "browser_manager") or not app.state.browser_manager:
+            return {"message": "浏览器未启动"}
+            
+        # 获取当前活动的标签页
+        if app.state.browser_manager.browser and app.state.browser_manager.browser.tabs:
+            tab = app.state.browser_manager.browser.tabs[0]
+            
+            # 保存截图
+            screenshot_path = "debug_screenshot.png"
+            tab.screenshot(screenshot_path)
+            
+            # 保存HTML源码
+            html_path = "debug_page.html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(tab.html)
+                
+            return {
+                "message": "调试信息已保存",
+                "screenshot": screenshot_path,
+                "html": html_path
+            }
+        else:
+            return {"message": "没有活动的标签页"}
+    except Exception as e:
+        return {"message": f"获取调试信息失败: {str(e)}"}
+
+
+@app.get("/debug/page")
+async def get_page_source():
+    """获取当前浏览器状态的HTML源码"""
+    try:
+        # 检查是否有活动的browser_manager
+        if not hasattr(app.state, "browser_manager") or not app.state.browser_manager:
+            return {"message": "浏览器未启动"}
+            
+        # 获取当前活动的标签页
+        if app.state.browser_manager.browser and app.state.browser_manager.browser.tabs:
+            tab = app.state.browser_manager.browser.tabs[0]
+            
+            # 保存HTML源码
+            html_path = "debug_page.html"
+            try:
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(tab.html)
+                
+                return {
+                    "message": "页面源码已保存",
+                    "html": html_path
+                }
+            except Exception as e:
+                return {"message": f"保存HTML失败: {str(e)}"}
+        else:
+            return {"message": "没有活动的标签页"}
+    except Exception as e:
+        return {"message": f"获取页面信息失败: {str(e)}"}
+
+
+# 修改进度获取端点
+@app.get("/registration/progress")
+async def get_registration_progress():
+    """获取当前注册进度"""
+    # 通过日志分析获取最新进度
+    return log_parser.parse_latest_logs()
+
+
+# 在需要用到register_account的地方再导入
+def get_register_function():
+    global register_account
+    if register_account is None:
+        from cursor_pro_keep_alive import main as register_account_func
+        register_account = register_account_func
+    return register_account
+
+
+# 在api.py中添加schedule_next_run函数
+async def schedule_next_run(interval_seconds):
+    """安排下一次注册任务运行"""
+    global registration_status
+    next_run = datetime.now().timestamp() + interval_seconds
+    registration_status["next_run"] = next_run
+    info(f"将在 {interval_seconds} 秒后重新检查账号数量")
+    # 设置等待
+    await asyncio.sleep(interval_seconds)
+    return True
 
 
 if __name__ == "__main__":

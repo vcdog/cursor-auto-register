@@ -1,5 +1,5 @@
 // 全局变量
-const REFRESH_INTERVAL = 10000; // 10秒
+const REFRESH_INTERVAL = 30000; // 30秒
 let currentPage = 1;
 let totalPages = 1;
 let itemsPerPage = 10;
@@ -397,15 +397,17 @@ function updateAccountsTable(accounts) {
                     <i class="fas fa-eye toggle-password" data-password="${account.password}" title="显示/隐藏密码"></i>
                     <i class="fas fa-copy copy-btn ms-1" data-copy="${account.password}" title="复制密码"></i>
                 </td>
-                ${renderTokenColumn(account.token, account.id)}
+                ${renderTokenColumn(account.token, account.id, account.email)}
                 ${renderUsageProgress(account.usage_limit)}
                 <td class="d-none d-lg-table-cell">
                     ${account.created_at || '未知'}
                 </td>
                 <td>
-                    <button class="btn btn-sm btn-outline-primary get-usage-btn" data-email="${account.email}" title="查询使用量">
-                        <i class="fas fa-chart-pie"></i>
-                    </button>
+                    <div class="btn-group">
+                        <button class="btn btn-sm btn-outline-primary get-usage-btn" data-email="${account.email}" title="查询使用量">
+                            <i class="fas fa-chart-pie"></i>
+                        </button>
+                    </div>
                 </td>
                 <td class="operation-column">
                     <div class="d-flex flex-wrap gap-1">
@@ -493,9 +495,11 @@ function renderAccountsTable() {
                     ${account.created_at || '未知'}
                 </td>
                 <td>
-                    <button class="btn btn-sm btn-outline-primary get-usage-btn" data-email="${account.email}" title="查询使用量">
-                        <i class="fas fa-chart-pie"></i>
-                    </button>
+                    <div class="btn-group">
+                        <button class="btn btn-sm btn-outline-primary get-usage-btn" data-email="${account.email}" title="查询使用量">
+                            <i class="fas fa-chart-pie"></i>
+                        </button>
+                    </div>
                 </td>
                 <td class="operation-column">
                     <div class="d-flex flex-wrap gap-1">
@@ -960,6 +964,13 @@ function bindTableEvents() {
         const email = $(this).data('email');
         getAccountUsage(email);
     });
+    
+    // 查看使用记录按钮
+    $('.view-records-btn').off('click').on('click', function() {
+        const email = $(this).data('email');
+        const id = $(this).data('id');
+        getAccountUsageRecords(email, id);
+    });
 
     // 删除按钮
     $('.delete-account-btn').off('click').on('click', function() {
@@ -1137,11 +1148,14 @@ function renderUsageProgress(usageLimit) {
 }
 
 // 修改Token列的渲染方式
-function renderTokenColumn(token, accountId) {
+function renderTokenColumn(token, accountId, email) {
     return `
         <td class="token-column">
             <button class="btn btn-sm btn-outline-info view-token-btn" data-token="${token}" data-account-id="${accountId}">
                 <i class="fas fa-eye"></i> 查看Token
+            </button>
+            <button class="btn btn-sm btn-outline-info view-records-btn" data-email="${email}" data-id="${accountId}" title="查看使用记录">
+                <i class="fas fa-history"></i>
             </button>
         </td>
     `;
@@ -1175,6 +1189,7 @@ function loadConfig() {
                 
                 $("#browser-useragent").val(config.BROWSER_USER_AGENT);
                 $("#accounts-limit").val(config.MAX_ACCOUNTS);
+                $("#captcha-method").val(config.EMAIL_CODE_TYPE || "API");
                 $("#email-domains").val(config.EMAIL_DOMAINS);
                 $("#email-username").val(config.EMAIL_USERNAME);
                 $("#email-pin").val(config.EMAIL_PIN);
@@ -1242,6 +1257,7 @@ function saveConfig() {
         DYNAMIC_USERAGENT: isDynamicUA,
         BROWSER_USER_AGENT: isDynamicUA ? "" : $("#browser-useragent").val(),
         MAX_ACCOUNTS: parseInt($("#accounts-limit").val()),
+        EMAIL_CODE_TYPE: $("#captcha-method").val(),
         EMAIL_DOMAINS: $("#email-domains").val(),
         EMAIL_USERNAME: $("#email-username").val(),
         EMAIL_PIN: $("#email-pin").val(),
@@ -1536,6 +1552,14 @@ function setupTaskRefresh() {
     
     // 初始加载任务状态
     checkTaskStatus();
+
+    // 添加注册进度刷新
+    setInterval(function() {
+        // 仅在任务运行时更新进度
+        if ($("#registration-status").hasClass("bg-primary")) {
+            updateRegistrationProgress();
+        }
+    }, 2000); // 每2秒更新一次进度
 }
 
 // 检查任务状态
@@ -1686,6 +1710,88 @@ function importAccounts(file) {
         error: function(xhr) {
             hideLoading();
             showAlert('danger', '导入账号失败: ' + (xhr.responseJSON?.detail || xhr.statusText));
+        }
+    });
+}
+
+// 获取账号使用记录
+function getAccountUsageRecords(email, id) {
+    showLoading();
+    
+    // 设置模态框中的账号邮箱
+    $('#recordEmail').text(email);
+    
+    // 清空记录列表
+    $('#usageRecordBody').empty();
+    
+    fetch(`/account/${id}/usage-records`)
+        .then(response => response.json())
+        .then(data => {
+            hideLoading();
+            
+            if (data.success) {
+                const records = data.records;
+                
+                if (records && records.length > 0) {
+                    // 隐藏无记录提示
+                    $('#no-records').hide();
+                    
+                    // 显示记录
+                    records.forEach(record => {
+                        const row = `
+                            <tr>
+                                <td>${formatDateTime(record.created_at)}</td>
+                                <td>${record.ip || '-'}</td>
+                                <td class="small text-truncate" style="max-width: 300px;" title="${record.user_agent || ''}">
+                                    ${record.user_agent || '-'}
+                                </td>
+                            </tr>
+                        `;
+                        $('#usageRecordBody').append(row);
+                    });
+                } else {
+                    // 显示无记录提示
+                    $('#usageRecordBody').empty();
+                    $('#no-records').show();
+                }
+                
+                // 显示模态框
+                new bootstrap.Modal(document.getElementById('usageRecordModal')).show();
+            } else {
+                showAlert(`获取使用记录失败: ${data.message || '未知错误'}`, 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('获取使用记录时发生错误:', error);
+            hideLoading();
+            showAlert('获取使用记录失败，请稍后重试', 'danger');
+        });
+}
+
+// 修改注册进度更新函数
+function updateRegistrationProgress() {
+    $.ajax({
+        url: "/registration/progress",
+        method: "GET",
+        success: function(data) {
+            // 更新进度值
+            const percentage = data.percentage;
+            
+            // 更新进度条
+            $("#registration-progress-bar").css("width", percentage + "%");
+            $("#registration-progress-bar").attr("aria-valuenow", percentage);
+            $("#registration-progress-bar").text(percentage + "%");
+            
+            // 同时更新文本显示
+            $("#registration-progress").text(percentage + "%");
+            
+            // 更新进度信息
+            $("#registration-message").text(data.message);
+            
+            // 显示注册详情区域
+            if (percentage > 0) {
+                $("#registration-details").show();
+            }
         }
     });
 }

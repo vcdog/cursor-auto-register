@@ -1,12 +1,13 @@
 # Cursor Auto Register 本地开发指南
 
-本项目是建在巨人肩膀上的一个开源项目，不做收费，仅供学习参考。
+本项目是建在巨人肩膀上的一个开源项目，Fork自cursor-auto-register项目基础上添加支持自定义域名通过cf转发Gmail邮箱等功能，为本地开发，不做收费，仅供学习参考。
 参考项目：
 
 - [chengazhen/cursor-auto-free](https://github.com/chengazhen/cursor-auto-free)：Cursor Pro 自动化工具
 
 - [cursor-account-api](https://github.com/Elawen-Carl/cursor-account-api)：Cursor Account API
 
+- [cursor-auto-register](https://github.com/Elawen-Carl/cursor-auto-register)：Cursor Auto Register
 
 ## 环境要求
 - Python 3.10+
@@ -20,7 +21,10 @@ pip install -r requirements.txt
 ```
 
 2. 配置环境变量
-- 按照 `config.py` 配置 `.env` 环境参数
+- 按照 `.env.example` 配置 `.env` 环境参数
+```bash
+cp .env.example .env
+```
 
 ## 使用说明
 
@@ -110,6 +114,30 @@ curl http://localhost:8000/health
 tail -f app.log
 ```
 
+## 最近更新
+
+### 功能改进
+
+1. **实时注册进度显示**
+   - 全新优化的进度显示界面，更直观展示注册流程各阶段
+   - 基于任务时间点的精确日志过滤，避免错误解析历史日志
+   - 进度条精确显示从0%-100%的完整注册过程
+
+2. **日志分析系统**
+   - 智能解析日志识别注册各阶段进度
+   - 防止进度回退机制，确保进度条平滑前进
+   - 支持提取并显示验证码信息
+
+3. **稳定性优化**
+   - 修复"code变量引用错误"等问题
+   - 改进错误处理和异常捕获
+   - 日志保存系统优化，减少文件IO
+
+### 使用提示
+
+- 点击"注册新账号"按钮后，系统会实时显示注册进度
+- 进度条将展示从准备开始(0%)到注册完成(100%)的全过程
+- 可随时查看"任务控制"面板了解系统状态
 
 ## 免责声明
 
