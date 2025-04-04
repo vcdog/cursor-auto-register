@@ -1,0 +1,19 @@
+import os
+from dotenv import load_dotenv
+
+def main():
+    # 检查环境变量
+    load_dotenv()
+    
+    # 检查浏览器是否可用
+    browser_path = os.environ.get('BROWSER_PATH')
+    if browser_path and not os.path.exists(browser_path):
+        print(f"错误: 配置的浏览器路径不存在: {browser_path}")
+        print("请检查.env文件中的BROWSER_PATH设置或系统中的浏览器安装")
+        return
+    
+    # 原有的代码逻辑
+    # ... 现有代码 ...
+
+if __name__ == "__main__":
+    main() 

@@ -65,7 +65,7 @@ EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "mailto.plus")
 EMAIL_PIN = os.getenv("EMAIL_PIN", "")
 # 可用于注册的邮箱域名列表（逗号分隔）
 EMAIL_DOMAINS = [
-    domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",")
+    domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",") if domain.strip()
 ]
 # ZMail API地址
 EMAIL_API = os.getenv("EMAIL_API", "")
@@ -115,3 +115,14 @@ PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT", "10"))
 # Gmail相关配置
 GMAIL_USERNAME = os.getenv("GMAIL_USERNAME", "")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+
+# 添加网易163邮箱的配置
+NETEASE_USERNAME = os.getenv("NETEASE_USERNAME", "")
+NETEASE_PASSWORD = os.getenv("NETEASE_PASSWORD", "")
+
+# 添加调试输出
+print(f"config.py 加载的EMAIL_DOMAINS: {EMAIL_DOMAINS}")
+print(f"原始环境变量EMAIL_DOMAINS: {os.getenv('EMAIL_DOMAINS')}")
+
+# 添加默认使用限制配置
+TOTAL_USAGE = int(os.getenv("TOTAL_USAGE", "150"))

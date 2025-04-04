@@ -11,18 +11,8 @@ from config import (
     EMAIL_DOMAINS,
     REGISTRATION_MAX_RETRIES,
     EMAIL_TYPE,
-    EMAIL_CODE_TYPE,
-    BROWSER_HEADLESS,
-    BROWSER_USER_AGENT,
-    DYNAMIC_USERAGENT,
-    BROWSER_PATH,
-    TOTAL_USAGE,
+    EMAIL_CODE_TYPE
 )
-import os
-from dotenv import load_dotenv
-
-# 确保每次都重新加载最新的.env配置
-load_dotenv(override=True)  # 使用override=True强制覆盖现有环境变量
 
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -161,10 +151,6 @@ def get_cursor_session_token(tab, max_attempts=5, retry_interval=3):
 
 def sign_up_account(browser, tab, account_info):
     info("=============开始注册账号=============")
-    
-    info("=============正在填写个人信息=============")
-    
-    info("=============提交个人信息=============")
     
     info("=============正在检测 Turnstile 验证=============")
     
@@ -446,57 +432,19 @@ def sign_up_account(browser, tab, account_info):
 
 
 class EmailGenerator:
-    def __init__(self):
-        # 在初始化时强制从环境变量读取最新的域名配置
-        self.domains = [
-            domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",") if domain.strip()
-        ]
-        info(f"EmailGenerator初始化时的域名列表: {self.domains}")
-        
-        # 初始化email属性
+    def __init__(
+        self,
+    ):
+        # 将密码生成移到这里，避免类定义时执行随机密码生成
+        self.default_first_name = self.generate_random_name()
+        self.default_last_name = self.generate_random_name()
+
+        # 从配置文件获取域名配置
+        self.domains = EMAIL_DOMAINS
+        info(f"当前可用域名: {self.domains}")
+
         self.email = None
         self.password = None
-        
-        # 显示警告如果仍然是默认值
-        if not self.domains or (len(self.domains) == 1 and self.domains[0] == "xxx.xx"):
-            error("警告: EMAIL_DOMAINS配置值无效或未设置，将使用默认值")
-        
-        # 其他初始化代码...
-        self.default_first_name = "user"
-        self.default_last_name = "account"
-        
-    def get_account_info(self):
-        """生成随机邮箱账号信息"""
-        # 确保每次都使用最新的域名列表
-        self.domains = [
-            domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",") if domain.strip()
-        ]
-        
-        # 确保domains不为空
-        if not self.domains or (len(self.domains) == 1 and self.domains[0] == "xxx.xx"):
-            error("警告: 未配置有效的EMAIL_DOMAINS，将使用默认值xxx.xx")
-            
-        # 随机选择一个域名
-        domain = random.choice(self.domains)
-        info(f"选择的邮箱域名: {domain}")
-        
-        # 生成随机用户名和密码
-        random_str = "".join(random.choices("abcdefghijklmnopqrstuvwxyz1234567890", k=8))
-        timestamp = str(int(time.time()))[-4:]  # 使用时间戳后4位
-        username = f"{random_str}{timestamp}@{domain}"
-        password = self.generate_random_password()
-        first_name = self.generate_random_name().capitalize() 
-        last_name = self.generate_random_name().capitalize()
-        
-        # 保存邮箱到实例变量，这样其他方法可以访问
-        self.email = username
-        
-        return {
-            "email": username,
-            "password": password,
-            "first_name": first_name,
-            "last_name": last_name,
-        }
 
     def generate_random_password(self, length=12):
         """生成随机密码 - 改进密码生成算法，确保包含各类字符"""
@@ -541,6 +489,17 @@ class EmailGenerator:
         domain = EMAIL_DOMAINS[0] if EMAIL_DOMAINS else "gmail.com"
             
         return f"{random_str}{timestamp}@{domain}"
+
+    def get_account_info(self):
+        """获取账号信息，确保每次调用都生成新的邮箱和密码"""
+        self.email = self.generate_email()
+        self.password = self.generate_random_password()
+        return {
+            "email": self.email,
+            "password": self.password,
+            "first_name": self.default_first_name.capitalize(),
+            "last_name": self.default_last_name.capitalize(),
+        }
 
     def _save_account_info(self, user, token, total_usage):
         try:
@@ -596,7 +555,7 @@ class EmailGenerator:
 
 
 def cleanup_and_exit(browser_manager=None, exit_code=0):
-    """清理资源但不退出程序"""
+    """清理资源并退出程序"""
     try:
         if browser_manager:
             info("正在关闭浏览器")
@@ -611,28 +570,15 @@ def cleanup_and_exit(browser_manager=None, exit_code=0):
             except:
                 pass
 
-        info("浏览器资源已清理完毕")
-        return exit_code  # 返回状态码而不是退出程序
+        info("程序正常退出")
+        sys.exit(exit_code)
 
     except Exception as e:
-        info(f"清理资源时发生错误: {str(e)}")
-        return 1  # 返回错误状态码而不是退出程序
+        info(f"清理退出时发生错误: {str(e)}")
+        sys.exit(1)
 
 
 def main():
-    # 在函数开始处先声明全局变量
-    global EMAIL_DOMAINS
-    
-    # 然后再使用
-    info(f"配置文件中的EMAIL_DOMAINS: {EMAIL_DOMAINS}")
-    info(f"环境变量EMAIL_DOMAINS: {os.getenv('EMAIL_DOMAINS', '未设置')}")
-    
-    # 更新全局变量
-    EMAIL_DOMAINS = [
-        domain.strip() for domain in os.getenv("EMAIL_DOMAINS", "xxx.xx").split(",") if domain.strip()
-    ]
-    info(f"更新后的EMAIL_DOMAINS: {EMAIL_DOMAINS}")
-    
     browser_manager = None
     max_retries = REGISTRATION_MAX_RETRIES  # 从配置文件获取
     current_retry = 0
@@ -675,18 +621,14 @@ def main():
                         info(f"成功获取会话Token: {token[:10]}...")
                         info(f"账号: {user}")
                         if token:
-                            # 使用email_generator实例的email属性，而不是直接调用_save_account_info
-                            # 确保从之前保存的account_info中获取email
-                            try:
-                                save_account_info(email_generator, user, token, TOTAL_USAGE, account_info.get('email'))
-                                info("注册流程完成")
-                                return cleanup_and_exit(browser_manager, 0)
-                            except Exception as e:
-                                info(f"保存账号信息时出错: {str(e)}")
+                            email_generator._save_account_info(user, token, TOTAL_USAGE)
+                            info("注册流程完成")
+                            cleanup_and_exit(browser_manager, 0)
                         else:
                             info("获取Cursor会话Token失败")
                     else:
                         info("无法获取会话Token，但注册过程已完成")
+                        # 可能需要的后续处理...
                     current_retry += 1
                 elif result in [
                     "EMAIL_USED",
@@ -719,9 +661,9 @@ def main():
     except Exception as e:
         info(f"主程序错误: {str(e)}")
         info(f"错误详情: {traceback.format_exc()}")
-        return cleanup_and_exit(browser_manager, 1)
+        cleanup_and_exit(browser_manager, 1)
     finally:
-        return cleanup_and_exit(browser_manager, 1)
+        cleanup_and_exit(browser_manager, 1)
 
 
 def detect_page_state(tab):
@@ -747,55 +689,6 @@ def detect_page_state(tab):
                 continue
     
     return "unknown"
-
-
-def save_account_info(email_generator, account_id, token, usage=None, email=None):
-    """保存账号信息到数据库或文件"""
-    try:
-        info(f"开始保存账号信息，账号ID: {account_id}")
-        
-        # 检查参数
-        if not email_generator:
-            info("警告: email_generator为空")
-        if not account_id:
-            info("警告: account_id为空")
-        if not token:
-            info("警告: token为空")
-            
-        # 使用全局变量TOTAL_USAGE作为默认值
-        usage = usage if usage is not None else TOTAL_USAGE
-        info(f"使用限制: {usage}")
-        
-        # 优先使用传入的邮箱
-        email = email or getattr(email_generator, 'email', None)
-        info(f"使用邮箱: {email}")
-        
-        # 如果没有传入邮箱，尝试从email_generator获取
-        if not email:
-            try:
-                if hasattr(email_generator, 'get_account_info'):
-                    account_info = email_generator.get_account_info()
-                    email = account_info.get("email")
-                    info(f"从get_account_info获取邮箱: {email}")
-            except Exception as e:
-                info(f"从email_generator获取邮箱时出错: {str(e)}")
-            
-        # 如果仍然无法获取邮箱，使用当前时间戳作为标识
-        if not email:
-            email = f"unknown_email_{int(time.time())}"
-            info(f"无法获取邮箱，使用临时标识: {email}")
-        
-        info(f"保存账号信息: {account_id}, 邮箱: {email}")
-        
-        # 调用实际的保存函数
-        result = email_generator._save_account_info(account_id, token, usage)
-        info(f"保存账号信息结果: {result}")
-        return result
-    except Exception as e:
-        info(f"保存账号信息失败: {str(e)}")
-        import traceback
-        info(f"错误详情: {traceback.format_exc()}")
-        return False
 
 
 if __name__ == "__main__":

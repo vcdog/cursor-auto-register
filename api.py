@@ -159,9 +159,12 @@ async def run_registration():
         register_func = get_register_function()
         
         # 使用注册函数
-        success = await asyncio.get_event_loop().run_in_executor(
+        success_code = await asyncio.get_event_loop().run_in_executor(
             None, register_func
         )
+        
+        # 检查返回状态码
+        success = success_code == 0  # 0表示成功
 
         if success:
             registration_status["successful_runs"] += 1
@@ -1500,6 +1503,18 @@ async def schedule_next_run(interval_seconds):
     # 设置等待
     await asyncio.sleep(interval_seconds)
     return True
+
+
+class EmailGenerator:
+    def __init__(self, config=None):
+        # 现有初始化代码...
+        self.email = ""  # 添加email属性
+        
+    # 在生成或获取邮箱时设置email属性
+    def generate_email(self):
+        # 现有代码...
+        self.email = email_address  # 保存生成的邮箱
+        return email_address
 
 
 if __name__ == "__main__":
